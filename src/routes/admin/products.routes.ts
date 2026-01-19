@@ -28,10 +28,11 @@ router.use(getCurrentUser, requireAdmin);
 // POST /admin/products
 router.post('/', upload.single('image'), async (req: Request, res: Response) => {
   try {
-    const { name, description, price, stock, category_id, image_base64 } = req.body;
+    const { name, description, price, stock, category_id, image_base64, image_url } = req.body;
 
-    if (!name || price === undefined || stock === undefined) {
-      return res.status(422).json({ detail: 'Missing required fields' });
+    // Validate required fields (FormData sends strings, so check for empty strings too)
+    if (!name || !price || !stock) {
+      return res.status(422).json({ detail: 'Missing required fields: name, price, and stock are required' });
     }
 
     if (category_id && mongoose.Types.ObjectId.isValid(category_id)) {
@@ -62,6 +63,9 @@ router.post('/', upload.single('image'), async (req: Request, res: Response) => 
 
       const fileContent = Buffer.from(encoded, 'base64');
       imageUrl = await r2Client.uploadFile(fileContent, `product_${name}.jpg`, contentType);
+    } else if (image_url) {
+      // Handle direct image URL (e.g., from presigned upload)
+      imageUrl = image_url;
     }
 
     const product = new Product({
@@ -75,8 +79,11 @@ router.post('/', upload.single('image'), async (req: Request, res: Response) => 
     await product.save();
 
     return res.status(201).json(toProductRead(product));
-  } catch (error) {
+  } catch (error: any) {
     console.error('Create product error:', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ detail: 'Product with this name already exists' });
+    }
     return res.status(500).json({ detail: 'Internal server error' });
   }
 });
@@ -111,7 +118,7 @@ router.get('/category/:categoryId', async (req: Request, res: Response) => {
 router.put('/:productId', upload.single('image'), async (req: Request, res: Response) => {
   try {
     const { productId } = req.params;
-    const { name, description, price, stock, category_id, image_base64 } = req.body;
+    const { name, description, price, stock, category_id, image_base64, image_url } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(productId)) {
       return res.status(400).json({ detail: 'Invalid product ID' });
@@ -122,12 +129,12 @@ router.put('/:productId', upload.single('image'), async (req: Request, res: Resp
       return res.status(404).json({ detail: 'Product not found !' });
     }
 
-    // Update fields if provided
-    if (name !== undefined) product.name = name;
-    if (description !== undefined) product.description = description;
-    if (price !== undefined) product.price = parseFloat(price);
-    if (stock !== undefined) product.stock = parseInt(stock, 10);
-    if (category_id !== undefined) {
+    // Update fields if provided (check for non-empty strings from FormData)
+    if (name) product.name = name;
+    if (description !== undefined) product.description = description || null;
+    if (price) product.price = parseFloat(price);
+    if (stock) product.stock = parseInt(stock, 10);
+    if (category_id) {
       product.category_id = new mongoose.Types.ObjectId(category_id);
     }
 
@@ -166,12 +173,21 @@ router.put('/:productId', upload.single('image'), async (req: Request, res: Resp
         `product_${product.name}.jpg`,
         contentType
       );
+    } else if (image_url) {
+      // Handle direct image URL (e.g., from presigned upload)
+      if (product.image_url && product.image_url !== image_url) {
+        await r2Client.deleteFile(product.image_url);
+      }
+      product.image_url = image_url;
     }
 
     await product.save();
     return res.status(200).json(toProductRead(product));
-  } catch (error) {
+  } catch (error: any) {
     console.error('Update product error:', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ detail: 'Product with this name already exists' });
+    }
     return res.status(500).json({ detail: 'Internal server error' });
   }
 });
